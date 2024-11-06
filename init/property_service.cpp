@@ -797,72 +797,6 @@ static void load_override_properties() {
     }
 }
 
-static const char *snet_prop_key[] = {
-    "ro.boot.selinux",
-    "ro.boot.warranty_bit",
-    "ro.warranty_bit",
-    "ro.debuggable",
-    "ro.secure",
-    "ro.build.type",
-    "ro.system.build.type",
-    "ro.system_ext.build.type",
-    "ro.vendor.build.type",
-    "ro.product.build.type",
-    "ro.odm.build.type",
-    "ro.build.keys",
-    "ro.build.tags",
-    "ro.system.build.tags",
-    "ro.vendor.boot.warranty_bit",
-    "ro.vendor.warranty_bit",
-    NULL
-};
-
-static const char *snet_prop_value[] = {
-    "enforcing", // ro.boot.selinux
-    "0", // ro.boot.warranty_bit
-    "0", // ro.warranty_bit
-    "0", // ro.debuggable
-    "1", // ro.secure
-    "user", // ro.build.type
-    "user", // ro.system.build.type
-    "user", // ro.system_ext.build.type
-    "user", // ro.vendor.build.type
-    "user", // ro.product.build.type
-    "user", // ro.odm.build.type
-    "release-keys", // ro.build.keys
-    "release-keys", // ro.build.tags
-    "release-keys", // ro.system.build.tags
-    "0", // ro.vendor.boot.warranty_bit
-    "0", // ro.vendor.warranty_bit
-    NULL
-};
-
-static void workaround_snet_properties() {
-    std::string build_type = android::base::GetProperty("ro.build.type", "");
-
-    // Weaken property override security to set safetynet props
-    weaken_prop_override_security = true;
-
-    std::string error;
-
-    // Hide all sensitive props if not eng build
-    if (build_type != "eng") {
-        LOG(INFO) << "snet: Hiding sensitive props";
-        for (int i = 0; snet_prop_key[i]; ++i) {
-            PropertySet(snet_prop_key[i], snet_prop_value[i], &error);
-        }
-    }
-
-    // Extra pops
-    std::string build_flavor_key = "ro.build.flavor";
-    std::string build_flavor_value = android::base::GetProperty(build_flavor_key, "");
-    build_flavor_value = android::base::StringReplace(build_flavor_value, "userdebug", "user", false);
-    PropertySet(build_flavor_key, build_flavor_value, &error);
-
-    // Restore the normal property override security after safetynet props have been set
-    weaken_prop_override_security = false;
-}
-
 // If the ro.product.[brand|device|manufacturer|model|name] properties have not been explicitly
 // set, derive them from ro.product.${partition}.* properties
 static void property_initialize_ro_product_props() {
@@ -1166,6 +1100,9 @@ void PropertyLoadBootDefaults() {
         }
     }
 
+    // Weaken property override security during execution of the vendor init extension
+    weaken_prop_override_security = true;
+
     // Update with vendor-specific property runtime overrides
     vendor_load_properties();
 
@@ -1177,10 +1114,9 @@ void PropertyLoadBootDefaults() {
 
     update_sys_usb_config();
 
-    // Workaround SafetyNet
-    if (!IsRecoveryMode()) {
-        workaround_snet_properties();
-    }
+    // Restore the normal property override security after init extension is executed
+    weaken_prop_override_security = false;
+
 }
 
 bool LoadPropertyInfoFromFile(const std::string& filename,
@@ -1324,23 +1260,6 @@ static void ProcessBootconfig() {
     });
 }
 
-static void SetSafetyNetProps() {
-    // Bail out if this is recovery, fastbootd, or anything other than a normal boot.
-    // fastbootd, in particular, needs the real values so it can allow flashing on
-    // unlocked bootloaders.
-    if (IsRecoveryMode()) {
-        return;
-    }
-
-    // Spoof properties
-    InitPropertySet("ro.boot.flash.locked", "1");
-    InitPropertySet("ro.boot.verifiedbootstate", "green");
-    InitPropertySet("ro.boot.veritymode", "enforcing");
-    InitPropertySet("ro.boot.vbmeta.device_state", "locked");
-    InitPropertySet("vendor.boot.vbmeta.device_state", "locked");
-    InitPropertySet("vendor.boot.verifiedbootstate", "green");
-}
-
 void PropertyInit() {
     selinux_callback cb;
     cb.func_audit = PropertyAuditCallback;
@@ -1354,9 +1273,6 @@ void PropertyInit() {
     if (!property_info_area.LoadDefaultPath()) {
         LOG(FATAL) << "Failed to load serialized property info file";
     }
-
-    // Report valid verified boot chain to help pass Google SafetyNet integrity checks
-    SetSafetyNetProps();
 
     // If arguments are passed both on the command line and in DT,
     // properties set in DT always have priority over the command-line ones.
